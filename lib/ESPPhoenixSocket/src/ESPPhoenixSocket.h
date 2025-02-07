@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
-// #define DEBUG_LOGGER
+#define DEBUG_LOGGER
 #ifdef DEBUG_LOGGER
 #define DL_LOG(format, ...) Serial.printf(format "\n", ##__VA_ARGS__)
 #define DL_SerialBegin(args...) Serial.begin(args)
@@ -46,6 +46,16 @@ public:
   {
     DL_LOG("[ESPPhoenixSocket] Beginning websocket connection %s/%d/%s", _server.c_str(), _port, _path.c_str());
     _webSocket.begin(_server.c_str(), _port, _path.c_str(), "phoenix");
+    _webSocket.onEvent(_webSocketEvent);
+    _webSocket.setReconnectInterval(RECONNECT_TIME);
+  }
+  void beginAuthorized(const String &token)
+  {
+    DL_LOG("[ESPPhoenixSocket] Beginning authorized websocket connection %s/%d/%s", _server.c_str(), _port, _path.c_str());
+    _webSocket.begin(_server.c_str(), _port, _path.c_str(), "phoenix");
+    DL_LOG("[ESPPhoenixSocket] Setting extra headers token: %s", token.c_str());
+    const char *token_c = String("x-token: " + token).c_str();
+    _webSocket.setExtraHeaders(token_c);
     _webSocket.onEvent(_webSocketEvent);
     _webSocket.setReconnectInterval(RECONNECT_TIME);
   }
