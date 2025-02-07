@@ -3,9 +3,9 @@
 #define ESPPhoenixSocket_h
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebSocketsClient.h>
+#include <ArduinoWebsockets.h>
 #include <ArduinoJson.h>
-// #define DEBUG_LOGGER
+#define DEBUG_LOGGER
 #ifdef DEBUG_LOGGER
 #define DL_LOG(format, ...) Serial.printf(format "\n", ##__VA_ARGS__)
 #define DL_SerialBegin(args...) Serial.begin(args)
@@ -15,6 +15,7 @@
 #endif
 #define RECONNECT_TIME 5000
 constexpr const char *MESSAGE_STRING = "{\"topic\":\"%s\",\"event\":\"%s\",\"ref\":\"%u\",\"payload\":%s}";
+using namespace websockets;
 class PhoenixSocket
 {
 public:
@@ -45,17 +46,28 @@ public:
   void begin()
   {
     DL_LOG("[ESPPhoenixSocket] Beginning websocket connection %s/%d/%s", _server.c_str(), _port, _path.c_str());
-    _webSocket.begin(_server.c_str(), _port, _path.c_str(), "phoenix");
+    _webSocket.connect(_server.c_str(), _port, _path.c_str());
     _webSocket.onEvent(_webSocketEvent);
-    _webSocket.setReconnectInterval(RECONNECT_TIME);
+  }
+  void beginAuthorized(const String &token)
+  {
+    DL_LOG("[ESPPhoenixSocket] Beginning authorized websocket connection ws://%s%s", _server.c_str(), _path.c_str());
+    _webSocket.setInsecure();
+    _webSocket.addHeader("x-token", token);
+    _webSocket.addHeader("Origin", "https://" + _server);
+    _webSocket.connect("ws://" + _server + _path);
+    DL_LOG("[ESPPhoenixSocket] Setting extra headers token: %s", token.c_str());
+    _webSocket.onEvent(_webSocketEvent);
+    _webSocket.onMessage([this](WebsocketsMessage message)
+                         { _handleIncomingMessage(message.data()); });
   }
   bool isConnected()
   {
-    return _webSocket.isConnected();
+    return _webSocket.available();
   }
   void loop()
   {
-    _webSocket.loop();
+    _webSocket.poll();
     if (millis() % 30000 == 0)
     {
       DL_LOG("[ESPPhoenixSocket] Sending heartbeat");
@@ -84,7 +96,7 @@ public:
   void onReply(ReplyCallback callback) { _onReplyCallback = std::move(callback); }
 
 private:
-  WebSocketsClient _webSocket;
+  WebsocketsClient _webSocket;
   String _server;
   uint16_t _port;
   String _path;
@@ -98,38 +110,37 @@ private:
 
   static PhoenixSocket *_instance;
 
-  static void _webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
+  static void _webSocketEvent(WebsocketsEvent type, String data)
   {
     if (!_instance)
       return;
-    _instance->_handleWebSocketEvent(type, payload, length);
+    _instance->_handleWebSocketEvent(type, (uint8_t *)data.c_str(), data.length());
   }
 
-  void _handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
+  void _handleWebSocketEvent(WebsocketsEvent type, uint8_t *payload, size_t length)
   {
     switch (type)
     {
-    case WStype_DISCONNECTED:
+    case WebsocketsEvent::ConnectionClosed:
       if (_onDisconnectCallback)
         _onDisconnectCallback(1000);
       break;
-    case WStype_CONNECTED:
+    case WebsocketsEvent::ConnectionOpened:
       if (_onConnectCallback)
         _onConnectCallback();
       break;
-    case WStype_TEXT:
-      _handleIncomingMessage(reinterpret_cast<char *>(payload));
-      break;
-    case WStype_ERROR:
-      if (_onErrorCallback)
-        _onErrorCallback("Websocket error");
+    case WebsocketsEvent::GotPing:
+      DL_LOG("[ESPPhoenixSocket] Got ping");
+      //_handleIncomingMessage(reinterpret_cast<char *>(payload));
       break;
     default:
+      if (_onErrorCallback)
+        _onErrorCallback("Websocket error");
       break;
     }
   }
 
-  void _handleIncomingMessage(const char *payload)
+  void _handleIncomingMessage(String payload)
   {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload);
@@ -165,7 +176,7 @@ private:
     char message[1024];
     uint32_t ref = encodeMessageString(message, sizeof(message), topic.c_str(), "phx_join", payload.c_str());
     DL_LOG("[ESPPhoenixSocket] Sending raw message as \n\t\t%s\n", message);
-    bool could = _webSocket.sendTXT(message);
+    bool could = _webSocket.send(message);
     DL_LOG("[ESPPhoenixSocket] %d after join message", could);
     return ref;
   }
@@ -175,7 +186,7 @@ private:
     char message[1024];
     uint32_t ref = encodeMessageString(message, sizeof(message), topic.c_str(), event.c_str(), payload.c_str());
     DL_LOG("[ESPPhoenixSocket] Sending raw message as \n\t\t%s\n", message);
-    _webSocket.sendTXT(message);
+    _webSocket.send(message);
     return ref;
   }
 
@@ -183,7 +194,7 @@ private:
   {
     char message[128];
     encodeMessageString(message, sizeof(message), "phoenix", "heartbeat", "{}");
-    _webSocket.sendTXT(message);
+    _webSocket.send(message);
   }
   uint32_t encodeMessageString(char *buffer, const uint16_t length, const char *topic, const char *event, const char *payload)
   {
